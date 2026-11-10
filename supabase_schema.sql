@@ -177,8 +177,16 @@ CREATE TABLE IF NOT EXISTS exam_chapters (
   name TEXT NOT NULL,
   "order" INTEGER DEFAULT 0,
   estimated_hours NUMERIC(5,2) DEFAULT 0,
+  is_completed BOOLEAN DEFAULT FALSE,
+  status TEXT DEFAULT 'pending',
+  completed_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Ensure columns exist if table was already created
+ALTER TABLE exam_chapters ADD COLUMN IF NOT EXISTS is_completed BOOLEAN DEFAULT FALSE;
+ALTER TABLE exam_chapters ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'pending';
+ALTER TABLE exam_chapters ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;
 
 -- 11. EXAM TOPICS
 CREATE TABLE IF NOT EXISTS exam_topics (

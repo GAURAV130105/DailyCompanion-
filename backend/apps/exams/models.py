@@ -88,6 +88,13 @@ class Chapter(BaseModel):
     name = models.CharField(max_length=200)
     order = models.IntegerField(default=0)
     estimated_hours = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+    is_completed = models.BooleanField(default=False)
+    status = models.CharField(
+        max_length=30,
+        choices=TOPIC_STATUS_CHOICES,
+        default="pending",
+    )
+    completed_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ["order", "name"]

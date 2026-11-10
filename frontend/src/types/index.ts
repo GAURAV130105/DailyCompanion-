@@ -123,6 +123,7 @@ export interface Topic {
   estimated_hours: number;
   notes?: string;
   is_completed?: boolean;
+  completed_at?: string | null;
 }
 
 export interface Chapter {
@@ -132,6 +133,9 @@ export interface Chapter {
   name: string;
   order: number;
   estimated_hours: number;
+  is_completed?: boolean;
+  status?: 'pending' | 'in_progress' | 'completed' | 'needs_revision';
+  completed_at?: string | null;
   topics?: Topic[];
 }
 
@@ -212,10 +216,13 @@ export interface MistakeNotebook {
 
 export interface RevisionSchedule {
   id: string;
+  user_id?: string;
   exam_profile?: string;
   exam_profile_id?: string;
   topic: string;
   topic_name?: string;
+  item_type?: 'chapter' | 'topic';
+  subject_name?: string;
   scheduled_date: string;
   completed: boolean;
   completed_at?: string | null;

@@ -60,24 +60,65 @@ export const useExamProgress = (id: string) => {
   return useQuery<ExamProgress>({
     queryKey: ['examProgress', id],
     queryFn: async () => {
-      const { data: subjects, error } = await supabase
-        .from('exam_subjects')
-        .select('id, name, color, exam_chapters(id, exam_topics(id, is_completed))')
-        .eq('exam_profile_id', id);
-      if (error) throw new Error(error.message);
+      let subjectsWithChapters: any[] = [];
+      try {
+        const { data, error } = await supabase
+          .from('exam_subjects')
+          .select('id, name, color, exam_chapters(id, is_completed, status, exam_topics(id, is_completed, status))')
+          .eq('exam_profile_id', id);
+        if (!error && Array.isArray(data) && data.length > 0) {
+          subjectsWithChapters = data;
+        }
+      } catch (err) {
+        // Fall back to localDb
+      }
+
+      if (subjectsWithChapters.length === 0) {
+        const localSubjects = localGet<any>('exam_subjects').filter(
+          (s: any) => s.exam_profile_id === id || s.exam_profile === id
+        );
+        const allChapters = localGet<any>('exam_chapters');
+        const allTopics = localGet<any>('exam_topics');
+        subjectsWithChapters = localSubjects.map((sub: any) => {
+          const chs = allChapters.filter(
+            (c: any) => c.subject_id === sub.id || c.subject === sub.id
+          );
+          return {
+            ...sub,
+            exam_chapters: chs.map((c: any) => ({
+              ...c,
+              exam_topics: allTopics.filter(
+                (t: any) => t.chapter_id === c.id || t.chapter === c.id
+              ),
+            })),
+          };
+        });
+      }
 
       let total = 0;
       let completed = 0;
       const bySubject: ExamProgress['by_subject'] = [];
 
-      for (const sub of (subjects as any[]) ?? []) {
+      for (const sub of subjectsWithChapters) {
         let subTotal = 0;
         let subCompleted = 0;
-        for (const ch of sub.exam_chapters ?? []) {
-          for (const topic of ch.exam_topics ?? []) {
+        const chapters = sub.exam_chapters || sub.chapters || [];
+        for (const ch of chapters) {
+          const topics = ch.exam_topics || ch.topics || [];
+          if (topics.length > 0) {
+            for (const topic of topics) {
+              total++;
+              subTotal++;
+              if (topic.is_completed || topic.status === 'completed') {
+                completed++;
+                subCompleted++;
+              }
+            }
+          } else {
+            // Count chapter directly if no granular topics exist
             total++;
             subTotal++;
-            if (topic.is_completed) {
+            if (ch.is_completed || ch.status === 'completed') {
               completed++;
               subCompleted++;
             }
@@ -99,7 +140,7 @@ export const useExamProgress = (id: string) => {
         completed: completed,
         completed_topics: completed,
         in_progress: 0,
-        pending: total - completed,
+        pending: Math.max(0, total - completed),
         needs_revision: 0,
         percent: pct,
         progress_percent: pct,
@@ -182,14 +223,20 @@ export const useSubjects = (examProfileId?: string) => {
       try {
         let query = supabase
           .from('exam_subjects')
-          .select('*')
+          .select('*, exam_chapters(*, exam_topics(*))')
           .order('order', { ascending: true });
         if (examProfileId) {
           query = query.eq('exam_profile_id', examProfileId);
         }
         const { data, error } = await query;
         if (!error && Array.isArray(data) && data.length > 0) {
-          cloudSubjects = data as Subject[];
+          cloudSubjects = data.map((sub: any) => ({
+            ...sub,
+            chapters: (sub.exam_chapters || sub.chapters || []).map((ch: any) => ({
+              ...ch,
+              topics: ch.exam_topics || ch.topics || [],
+            })),
+          })) as Subject[];
         }
       } catch (err) {
         // Fall back
@@ -202,12 +249,40 @@ export const useSubjects = (examProfileId?: string) => {
         );
       }
 
+      const allLocalChapters = localGet<Chapter>('exam_chapters');
+      const allLocalTopics = localGet<Topic>('exam_topics');
+
+      const populatedLocalSubjects = localSubjects.map((sub: any) => {
+        const subChapters = allLocalChapters
+          .filter((c: any) => c.subject_id === sub.id || c.subject === sub.id)
+          .map((ch: any) => {
+            const chTopics = allLocalTopics.filter(
+              (t: any) => t.chapter_id === ch.id || t.chapter === ch.id
+            );
+            return {
+              ...ch,
+              topics: chTopics,
+            };
+          });
+        return {
+          ...sub,
+          chapters: subChapters,
+        };
+      });
+
       const map = new Map<string, Subject>();
-      for (const s of localSubjects) {
+      for (const s of populatedLocalSubjects) {
         if (s && s.id) map.set(s.id, s);
       }
       for (const s of cloudSubjects) {
-        if (s && s.id) map.set(s.id, s);
+        if (s && s.id) {
+          const localItem = map.get(s.id);
+          const chapters =
+            s.chapters && s.chapters.length > 0
+              ? s.chapters
+              : localItem?.chapters || [];
+          map.set(s.id, { ...s, chapters });
+        }
       }
 
       return Array.from(map.values()).sort((a, b) => (a.order || 0) - (b.order || 0));
@@ -292,14 +367,17 @@ export const useChapters = (subjectId?: string) => {
       try {
         let query = supabase
           .from('exam_chapters')
-          .select('*')
+          .select('*, exam_topics(*)')
           .order('order', { ascending: true });
         if (subjectId) {
           query = query.eq('subject_id', subjectId);
         }
         const { data, error } = await query;
         if (!error && Array.isArray(data) && data.length > 0) {
-          cloudChapters = data as Chapter[];
+          cloudChapters = data.map((ch: any) => ({
+            ...ch,
+            topics: ch.exam_topics || ch.topics || [],
+          })) as Chapter[];
         }
       } catch (err) {
         // Fall back
@@ -312,12 +390,30 @@ export const useChapters = (subjectId?: string) => {
         );
       }
 
+      const allLocalTopics = localGet<Topic>('exam_topics');
+      const populatedLocalChapters = localChapters.map((ch: any) => {
+        const chTopics = allLocalTopics.filter(
+          (t: any) => t.chapter_id === ch.id || t.chapter === ch.id
+        );
+        return {
+          ...ch,
+          topics: chTopics,
+        };
+      });
+
       const map = new Map<string, Chapter>();
-      for (const c of localChapters) {
+      for (const c of populatedLocalChapters) {
         if (c && c.id) map.set(c.id, c);
       }
       for (const c of cloudChapters) {
-        if (c && c.id) map.set(c.id, c);
+        if (c && c.id) {
+          const localItem = map.get(c.id);
+          const topics =
+            c.topics && c.topics.length > 0
+              ? c.topics
+              : localItem?.topics || [];
+          map.set(c.id, { ...c, topics });
+        }
       }
 
       return Array.from(map.values()).sort((a, b) => (a.order || 0) - (b.order || 0));
@@ -330,7 +426,11 @@ export const useCreateChapter = () => {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (data: Partial<Chapter>) => {
-      const payload: Record<string, any> = { ...data };
+      const payload: Record<string, any> = {
+        ...data,
+        is_completed: data.is_completed ?? false,
+        status: data.status || 'pending',
+      };
       const subId = data.subject || (data as any).subject_id;
       if (subId) {
         payload.subject_id = subId;
@@ -347,6 +447,8 @@ export const useCreateChapter = () => {
             estimated_hours: Number(payload.estimated_hours) || 1,
             order: Number(payload.order) || 1,
             subject_id: payload.subject_id,
+            is_completed: payload.is_completed,
+            status: payload.status,
           })
           .select()
           .single();
@@ -363,9 +465,48 @@ export const useCreateChapter = () => {
     onSuccess: (data) => {
       const subId = (data as any).subject_id || (data as any).subject;
       qc.invalidateQueries({ queryKey: ['chapters'] });
+      qc.invalidateQueries({ queryKey: ['subjects'] });
+      qc.invalidateQueries({ queryKey: ['examProfile'] });
+      qc.invalidateQueries({ queryKey: ['examProgress'] });
       if (subId) {
         qc.invalidateQueries({ queryKey: ['chapters', subId] });
       }
+    },
+  });
+};
+
+export const useUpdateChapter = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, ...updates }: Partial<Chapter> & { id: string }) => {
+      const payload: Record<string, any> = { ...updates };
+      const subId = updates.subject || (updates as any).subject_id;
+      if (subId) {
+        payload.subject_id = subId;
+        payload.subject = subId;
+      }
+
+      const localUpdated = localUpdate<Chapter>('exam_chapters', id, payload);
+
+      try {
+        const { data, error } = await supabase
+          .from('exam_chapters')
+          .update(payload)
+          .eq('id', id)
+          .select()
+          .single();
+        if (!error && data) return data as Chapter;
+      } catch (err) {
+        // Fall back
+      }
+      return localUpdated as Chapter;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['chapters'] });
+      qc.invalidateQueries({ queryKey: ['subjects'] });
+      qc.invalidateQueries({ queryKey: ['examProfile'] });
+      qc.invalidateQueries({ queryKey: ['examProgress'] });
+      qc.invalidateQueries({ queryKey: ['revisions'] });
     },
   });
 };
@@ -381,7 +522,11 @@ export const useDeleteChapter = () => {
         // ignore
       }
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['chapters'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['chapters'] });
+      qc.invalidateQueries({ queryKey: ['subjects'] });
+      qc.invalidateQueries({ queryKey: ['examProgress'] });
+    },
   });
 };
 
@@ -618,8 +763,9 @@ export const useRevisions = (examProfileId?: string) => {
   return useQuery<RevisionSchedule[]>({
     queryKey: ['revisions', examProfileId],
     queryFn: async () => {
-      const user = await getAuthenticatedUser();
+      let cloudRevisions: RevisionSchedule[] = [];
       try {
+        const user = await getAuthenticatedUser();
         let query = supabase
           .from('revision_schedules')
           .select('*')
@@ -629,11 +775,32 @@ export const useRevisions = (examProfileId?: string) => {
           query = query.eq('exam_profile_id', examProfileId);
         }
         const { data, error } = await query;
-        if (!error && data) return data as RevisionSchedule[];
+        if (!error && Array.isArray(data) && data.length > 0) {
+          cloudRevisions = data as RevisionSchedule[];
+        }
       } catch (err) {
         // Fall through
       }
-      return [] as RevisionSchedule[];
+
+      let localRevisions = localGet<RevisionSchedule>('revision_schedules');
+      if (examProfileId) {
+        localRevisions = localRevisions.filter(
+          (r: any) =>
+            r.exam_profile_id === examProfileId || r.exam_profile === examProfileId
+        );
+      }
+
+      const map = new Map<string, RevisionSchedule>();
+      for (const r of localRevisions) {
+        if (r && r.id) map.set(r.id, r);
+      }
+      for (const r of cloudRevisions) {
+        if (r && r.id) map.set(r.id, r);
+      }
+
+      return Array.from(map.values()).sort(
+        (a, b) => new Date(a.scheduled_date).getTime() - new Date(b.scheduled_date).getTime()
+      );
     },
   });
 };
@@ -642,29 +809,53 @@ export const useCreateRevision = () => {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (data: Partial<RevisionSchedule>) => {
-      const user = await getAuthenticatedUser();
-      const payload: Record<string, any> = { ...data, user_id: user.id };
+      let userId = 'demo-user-12345';
+      try {
+        const user = await getAuthenticatedUser();
+        userId = user.id;
+      } catch (err) {
+        // fallback
+      }
+      const payload: Record<string, any> = {
+        ...data,
+        user_id: data.user_id || userId,
+        completed: data.completed ?? false,
+        interval_days: data.interval_days || 1,
+        revision_number: data.revision_number || 1,
+        scheduled_date:
+          data.scheduled_date ||
+          new Date(Date.now() + 86400000).toISOString().split('T')[0],
+      };
       if (data.exam_profile && !payload.exam_profile_id) {
         payload.exam_profile_id = data.exam_profile;
       }
+
+      const localRecord = localInsert<RevisionSchedule>(
+        'revision_schedules',
+        payload as any
+      );
+
       try {
         const { data: result, error } = await supabase
           .from('revision_schedules')
           .insert(payload)
           .select()
           .single();
-        if (!error && result) return result as RevisionSchedule;
+        if (!error && result) {
+          localDelete('revision_schedules', localRecord.id);
+          localInsert<RevisionSchedule>('revision_schedules', result as any);
+          return result as RevisionSchedule;
+        }
       } catch (err) {
         // Fall through
       }
-      return { id: `rev-${Date.now()}`, ...payload } as RevisionSchedule;
+      return localRecord as RevisionSchedule;
     },
     onSuccess: (data) => {
       const profileId = data.exam_profile_id || data.exam_profile;
+      qc.invalidateQueries({ queryKey: ['revisions'] });
       if (profileId) {
         qc.invalidateQueries({ queryKey: ['revisions', profileId] });
-      } else {
-        qc.invalidateQueries({ queryKey: ['revisions'] });
       }
     },
   });
@@ -674,14 +865,24 @@ export const useCompleteRevision = () => {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (id: string) => {
-      const { data, error } = await supabase
-        .from('revision_schedules')
-        .update({ completed: true, completed_at: new Date().toISOString() })
-        .eq('id', id)
-        .select()
-        .single();
-      if (error) throw new Error(error.message);
-      return data as RevisionSchedule;
+      const now = new Date().toISOString();
+      localUpdate<RevisionSchedule>('revision_schedules', id, {
+        completed: true,
+        completed_at: now,
+      });
+
+      try {
+        const { data, error } = await supabase
+          .from('revision_schedules')
+          .update({ completed: true, completed_at: now })
+          .eq('id', id)
+          .select()
+          .single();
+        if (!error && data) return data as RevisionSchedule;
+      } catch (err) {
+        // ignore
+      }
+      return { id, completed: true, completed_at: now } as RevisionSchedule;
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['revisions'] }),
   });
@@ -691,8 +892,12 @@ export const useDeleteRevision = () => {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (id: string) => {
-      const { error } = await supabase.from('revision_schedules').delete().eq('id', id);
-      if (error) throw new Error(error.message);
+      localDelete('revision_schedules', id);
+      try {
+        await supabase.from('revision_schedules').delete().eq('id', id);
+      } catch (err) {
+        // ignore
+      }
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['revisions'] }),
   });
