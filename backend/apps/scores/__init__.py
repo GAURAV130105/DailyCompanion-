@@ -1,0 +1,3 @@
+"""
+Scores app package.
+"""

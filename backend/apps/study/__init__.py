@@ -1,0 +1,3 @@
+"""
+Study app package.
+"""

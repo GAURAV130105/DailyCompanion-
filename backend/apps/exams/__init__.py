@@ -1,0 +1,3 @@
+"""
+Exams app package.
+"""

@@ -1,0 +1,3 @@
+"""
+Habits app package.
+"""
